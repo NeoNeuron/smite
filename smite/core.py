@@ -1,6 +1,32 @@
 # -*- coding: utf-8 -*-
-from scipy import stats
 import numpy as np
+from scipy.linalg import hankel
+from itertools import permutations
+
+def generate_permutations(sequence):
+    """
+    Generate all permutations of the given sequence
+
+    """
+    return [''.join(np.asarray(item).astype(str)) for item in permutations(sequence, len(sequence))]
+
+def sym2int(sym):
+    """
+    Convert a symbolic str representation to an integer representation.
+
+    Args:
+        sym (numpy.ndarray): The symbolic representation to be converted.
+
+    Returns:
+        tuple: A tuple containing the size of the integer representation and the converted integer representation.
+
+    """
+    perms = generate_permutations(np.arange(len(sym[0])))
+    size_X = len(perms)
+    mapping_dict = {key: value for key, value in zip(perms, np.arange(len(perms)))}
+    mapper = np.vectorize(lambda x: mapping_dict.get(x, -1))
+    mappedX = mapper(sym)
+    return size_X, mappedX
 
 def symbolize(X, m):
     """
@@ -18,29 +44,23 @@ def symbolize(X, m):
 
     """
     
-    X = np.array(X)
+    X = np.asarray(X)
 
     if m >= len(X):
         raise ValueError("Length of the series must be greater than m")
     
-    dummy = []
-    for i in range(m):
-        l = np.roll(X,-i)
-        dummy.append(l[:-(m-1)])
-    
-    dummy = np.array(dummy)
-    
-    symX = []
-    
-    for mset in dummy.T:
-        rank = stats.rankdata(mset, method="min")
-        symbol = np.array2string(rank, separator="")
-        symbol = symbol[1:-1]
-        symX.append(symbol)
-        
+    dummy = hankel(X[:m],X[m-1:]).T
+
+    yy = np.argsort(dummy, axis=1)
+    symX = np.zeros_like(dummy).astype(int)
+    indices = np.tile(np.arange(m), (dummy.shape[0], 1))
+    xx = np.tile(np.arange(0, dummy.shape[0]), (dummy.shape[1], 1)).astype(int).T
+    symX[xx.flatten(), yy.flatten()] = indices.flatten()
+    symX = [''.join(line) for line in symX.astype(str)]
+
     return symX
 
-def symbolic_mutual_information(symX, symY):
+def symbolic_mutual_information_old(symX, symY):
     """
     Computes the symbolic mutual information between symbolic series X and 
     symbolic series Y.
@@ -77,7 +97,7 @@ def symbolic_mutual_information(symX, symY):
             
             try:
                 c = jp[yi][xi]
-                MI += c * np.log(c /(a * b)) / np.log(len(symbols));
+                MI += c * np.log(c /(a * b))
             except KeyError:
                 continue
             except:
@@ -86,7 +106,7 @@ def symbolic_mutual_information(symX, symY):
         
     return MI
 
-def symbolic_transfer_entropy(symX, symY):
+def symbolic_transfer_entropy_old(symX, symY):
     """
     Computes T(Y->X), the transfer of entropy from symbolic series Y to X.
     
@@ -131,6 +151,96 @@ def symbolic_transfer_entropy(symX, symY):
     del cp2
     del jp
     
+    return TE
+
+def symbolic_mutual_information(symX, symY):
+    """
+    Computes the symbolic mutual information between symbolic series X and 
+    symbolic series Y.
+    
+    Parameters
+    ----------
+    symX : Symbolic series X.
+    symY : Symbolic series Y.
+    
+    Returns
+    ----------
+    Value for mutual information
+
+    """
+
+    if len(symX) != len(symY):
+        raise ValueError('All arrays must have same length')
+        
+    symX = np.array(symX)
+    symY = np.array(symY)
+
+    # mapping symbols to integers
+    size_X, mappedX = sym2int(symX)
+    size_Y, mappedY = sym2int(symY)
+
+    # P(x[n], y[n])
+    pxy,_,_ = np.histogram2d(
+        mappedX, mappedY,
+        bins=(size_X, size_Y),
+        range=((-0.5,size_X-0.5),(-0.5,size_Y-0.5)),
+        density=True)
+
+    px = pxy.sum(axis=1)  # P(x[n])
+    py = pxy.sum(axis=0)  # P(y[n])
+    
+    MI = 0
+    
+    for i in range(pxy.shape[0]):
+        for j in range(pxy.shape[1]):
+            if pxy[i,j] > 0:
+                MI += pxy[i,j] * np.log(pxy[i,j] / (px[i] * py[j]))
+    return MI
+
+def symbolic_transfer_entropy(symX, symY):
+    """
+    Computes T(Y->X), the transfer of entropy from symbolic series Y to X.
+    
+    Parameters
+    ----------
+    symX : Symbolic series X.
+    symY : Symbolic series Y.
+    
+    Returns
+    ----------
+    Value for mutual information
+
+    """
+
+    if len(symX) != len(symY):
+        raise ValueError('All arrays must have same length')
+        
+    symX = np.array(symX)
+    symY = np.array(symY)
+
+    # mapping symbols to integers
+    size_X, mappedX = sym2int(symX)
+    size_Y, mappedY = sym2int(symY)
+
+    # P(x[n+1], x[n], y[n])
+    pxxy,_,_ = np.histogramdd(
+        np.vstack((mappedX[1:], mappedX[:-1], mappedY[:-1])).T,
+        bins=(size_X, size_X, size_Y),
+        range=((-0.5,size_X-0.5), (-0.5,size_X-0.5), (-0.5,size_Y-0.5)),
+        density=True)
+
+    pxy = pxxy.sum(axis=0)  # P(x[n], y[n])
+    pxx = pxxy.sum(axis=2)  # P(x[n+1], x[n])
+    px  = pxx.sum(axis=0)   # P(x[n])
+    
+    TE = 0
+    
+    for i in range(pxxy.shape[0]):
+        for j in range(pxxy.shape[1]):
+            for k in range(pxxy.shape[2]):
+                if pxxy[i,j,k] > 0:
+                    TE += pxxy[i,j,k] * np.log2(pxxy[i,j,k] * px[j] 
+                                                / (pxx[i,j] * pxy[j,k]))
     return TE
 
 def symbolic_probabilities(symX):
