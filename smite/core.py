@@ -130,7 +130,7 @@ def symbolic_transfer_entropy(symX, symY):
     size_Y, mappedY = sym2int(symY)
 
     # P(x[n+1], x[n], y[n])
-    pxxy,_,_ = np.histogramdd(
+    pxxy,_ = np.histogramdd(
         np.vstack((mappedX[1:], mappedX[:-1], mappedY[:-1])).T,
         bins=(size_X, size_X, size_Y),
         range=((-0.5,size_X-0.5), (-0.5,size_X-0.5), (-0.5,size_Y-0.5)),
