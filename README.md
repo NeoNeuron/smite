@@ -28,4 +28,10 @@ print("T(Y->X) = " + str(TXY))
 print("T(X->Y) = " + str(TYX))
 print("Transfer of Entropy = " + str(TE))
 
+# compute the STE matrix of a set of time series
+data = np.random.randn(3000,3)
+STE = smite.symbolic_transfer_entropy_matrix(data, 3, n_jobs=1)
+# if njobs > 1, the computation will be parallelized
+print(STE)
+
 ```

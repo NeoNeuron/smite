@@ -9,7 +9,7 @@ setuptools.setup(
     author="Kai Chen",
     author_email="kchen513@sjtu.edu.cn",
 
-    version="0.0.1",
+    version="0.0.2",
     url="https://github.com/NeoNeuron/smite",
 
     description="Package for symbolic transfer entropy and mutual information estimation.",

@@ -2,6 +2,8 @@
 import numpy as np
 from scipy.linalg import hankel
 from itertools import permutations
+from sklearn.utils.parallel import Parallel, delayed
+from typing import List, Union
 
 def generate_permutations(sequence):
     """
@@ -28,14 +30,14 @@ def sym2int(sym):
     mappedX = mapper(sym)
     return size_X, mappedX
 
-def symbolize(X, m):
+def symbolize(X:np.ndarray, m:int=3):
     """
     Converts numeric values of the series to a symbolic version of it based
     on the m consecutive values.
     
     Parameters
     ----------
-    X : Series to symbolize.
+    X : 1-d numpy array to symbolize.
     m : length of the symbolic subset.
     
     Returns
@@ -44,8 +46,6 @@ def symbolize(X, m):
 
     """
     
-    X = np.asarray(X)
-
     if m >= len(X):
         raise ValueError("Length of the series must be greater than m")
     
@@ -56,7 +56,7 @@ def symbolize(X, m):
     indices = np.tile(np.arange(m), (dummy.shape[0], 1))
     xx = np.tile(np.arange(0, dummy.shape[0]), (dummy.shape[1], 1)).astype(int).T
     symX[xx.flatten(), yy.flatten()] = indices.flatten()
-    symX = [''.join(line) for line in symX.astype(str)]
+    symX = np.asarray([''.join(line) for line in symX.astype(str)])
 
     return symX
 
@@ -104,18 +104,82 @@ def symbolic_mutual_information(symX, symY):
                 MI += pxy[i,j] * np.log(pxy[i,j] / (px[i] * py[j]))
     return MI
 
-def symbolic_transfer_entropy(symX, symY):
+
+def symbolic_transfer_entropy_matrix(X:np.ndarray, m:int=1, n_jobs:int=1) -> np.ndarray:
     """
     Computes T(Y->X), the transfer of entropy from symbolic series Y to X.
     
     Parameters
     ----------
-    symX : Symbolic series X.
-    symY : Symbolic series Y.
+    X : time series, shape (n_time_points, n_nodes).
+    m : order of time delayed embedding.
+    n_jobs: number of parallel jobs.
     
     Returns
     ----------
-    Value for mutual information
+    matrix of symbolic transfer entropy
+
+    """
+
+    if n_jobs > 1:
+        # symbolize the data
+        job_seq = Parallel(n_jobs=n_jobs)
+        symX = np.asarray(job_seq(delayed(symbolize)(row, m=m) for row in X.T))
+        # mapping symbols to integers
+        results = job_seq(delayed(sym2int)(row) for row in symX)
+        size_X = np.asarray([item[0] for item in results])
+        mappedX = [item[1] for item in results]
+
+        N = X.shape[1]
+        x_ids, y_ids = np.meshgrid(np.arange(N), np.arange(N))
+        size_X, size_Y = np.meshgrid(size_X, size_X)
+        mask = (1-np.eye(N)).astype(bool)
+        ste_list = np.asarray(
+            job_seq(delayed(_symbolic_transfer_entropy)(
+                    x_s, y_s, mappedX[x_id], mappedX[y_id]
+                ) for x_id, y_id, x_s, y_s in zip(
+                    x_ids[mask], y_ids[mask], size_X[mask], size_Y[mask])
+            )
+        )
+        ste = np.zeros((N,N))
+        ste[mask] = ste_list
+    else:
+        # symbolize the data
+        symX = np.asarray([symbolize(row, m=m) for row in X.T])
+        # mapping symbols to integers
+        results = [sym2int(row) for row in symX]
+        size_X = np.asarray([item[0] for item in results])
+        mappedX = [item[1] for item in results]
+
+        N = X.shape[1]
+        x_ids, y_ids = np.meshgrid(np.arange(N), np.arange(N))
+        size_X, size_Y = np.meshgrid(size_X, size_X)
+        mask = (1-np.eye(N)).astype(bool)
+        ste_list = np.asarray(
+            [_symbolic_transfer_entropy(
+                    x_s, y_s, mappedX[x_id], mappedX[y_id]
+                ) for x_id, y_id, x_s, y_s in zip(
+                    x_ids[mask], y_ids[mask], size_X[mask], size_Y[mask])
+            ]
+        )
+        ste = np.zeros((N,N))
+        ste[mask] = ste_list
+
+    return ste
+
+
+def symbolic_transfer_entropy(symX:Union[List, np.ndarray], symY:Union[List, np.ndarray]):
+    """
+    Computes T(Y->X), the transfer of entropy from symbolic series Y to X.
+    
+    Parameters
+    ----------
+    symX : 1-d Symbolic series X.
+    symY : 1-d Symbolic series Y.
+    
+    Returns
+    ----------
+    Value for symbolic transfer entropy
 
     """
 
@@ -128,6 +192,25 @@ def symbolic_transfer_entropy(symX, symY):
     # mapping symbols to integers
     size_X, mappedX = sym2int(symX)
     size_Y, mappedY = sym2int(symY)
+    return _symbolic_transfer_entropy(size_X, size_Y, mappedX, mappedY)
+
+
+def _symbolic_transfer_entropy(size_X, size_Y, mappedX, mappedY):
+    """
+    Computes T(Y->X), the transfer of entropy from symbolic series Y to X.
+    
+    Parameters
+    ----------
+    size_X : size of X's symbolic space.
+    size_Y : size of Y's symbolic space.
+    mappedX : mapped symbolic series X.
+    mappedY : mapped symbolic series Y.
+    
+    Returns
+    ----------
+    Value for mutual information
+
+    """
 
     # P(x[n+1], x[n], y[n])
     pxxy,_ = np.histogramdd(
