@@ -123,7 +123,10 @@ def symbolic_transfer_entropy_matrix(X:np.ndarray, m:int=1, n_jobs:int=1) -> np.
 
     if n_jobs > 1:
         # symbolize the data
-        job_seq = Parallel(n_jobs=n_jobs)
+        if n_jobs >= X.shape[1]:
+            job_seq = Parallel(n_jobs=X.shape[1])
+        else:
+            job_seq = Parallel(n_jobs=n_jobs)
         symX = np.asarray(job_seq(delayed(symbolize)(row, m=m) for row in X.T))
         # mapping symbols to integers
         results = job_seq(delayed(sym2int)(row) for row in symX)
@@ -134,6 +137,7 @@ def symbolic_transfer_entropy_matrix(X:np.ndarray, m:int=1, n_jobs:int=1) -> np.
         x_ids, y_ids = np.meshgrid(np.arange(N), np.arange(N))
         size_X, size_Y = np.meshgrid(size_X, size_X)
         mask = (1-np.eye(N)).astype(bool)
+        job_seq = Parallel(n_jobs=n_jobs)
         ste_list = np.asarray(
             job_seq(delayed(_symbolic_transfer_entropy)(
                     x_s, y_s, mappedX[x_id], mappedX[y_id]
