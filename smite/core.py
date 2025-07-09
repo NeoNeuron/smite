@@ -4,6 +4,9 @@ from scipy.linalg import hankel
 from itertools import permutations
 from sklearn.utils.parallel import Parallel, delayed
 from typing import List, Union
+import multiprocessing
+import time
+from joblib import parallel_backend
 
 def generate_permutations(sequence):
     """
@@ -46,18 +49,12 @@ def symbolize(X:np.ndarray, m:int=3):
 
     """
     
-    if m >= len(X):
+    if m > len(X):
         raise ValueError("Length of the series must be greater than m")
     
     dummy = hankel(X[:m],X[m-1:]).T
-
-    yy = np.argsort(dummy, axis=1)
-    symX = np.zeros_like(dummy).astype(int)
-    indices = np.tile(np.arange(m), (dummy.shape[0], 1))
-    xx = np.tile(np.arange(0, dummy.shape[0]), (dummy.shape[1], 1)).astype(int).T
-    symX[xx.flatten(), yy.flatten()] = indices.flatten()
+    symX = np.argsort(dummy, axis=1)
     symX = np.asarray([''.join(line) for line in symX.astype(str)])
-
     return symX
 
 def symbolic_mutual_information(symX, symY):
@@ -105,9 +102,12 @@ def symbolic_mutual_information(symX, symY):
     return MI
 
 
-def symbolic_transfer_entropy_matrix(X:np.ndarray, m:int=1, n_jobs:int=1) -> np.ndarray:
+def symbolic_transfer_entropy_matrix(X:np.ndarray, m:int=1, n_jobs:int=-1,
+        runtime_collect=True) -> np.ndarray:
     """
     Computes T(Y->X), the transfer of entropy from symbolic series Y to X.
+    return matrix of symbolic transfer entropy for all pairs of nodes.
+    T_ij means STE value from neuron j to neuron i.
     
     Parameters
     ----------
@@ -121,55 +121,72 @@ def symbolic_transfer_entropy_matrix(X:np.ndarray, m:int=1, n_jobs:int=1) -> np.
 
     """
 
-    if n_jobs > 1:
-        # symbolize the data
-        if n_jobs >= X.shape[1]:
-            job_seq = Parallel(n_jobs=X.shape[1])
+    if runtime_collect:
+        t0_wall, t0_cpu = time.time(), time.process_time()
+
+    num_cpus = multiprocessing.cpu_count()
+    if n_jobs == -1:
+        n_jobs = num_cpus
+    n_jobs=np.minimum(n_jobs, X.shape[-1])
+
+    total_cpu_time = 0.0
+    # symbolize the data
+    def single_symbolize(row):
+        t0 = time.process_time()
+        value = symbolize(row, m=m)
+        t1 = time.process_time()
+        return value, t1 - t0
+    # with parallel_backend('loky', n_jobs=n_jobs):
+    results = Parallel(n_jobs=n_jobs)(delayed(single_symbolize)(row) for row in X.T)
+    symX = []
+    for item, t_cpu in results:
+        symX.append(item)
+        total_cpu_time += t_cpu
+    symX = np.asarray(symX)
+
+    # mapping symbols to integers
+    def single_sym2int(row):
+        t0 = time.process_time()
+        size_X, mappedX = sym2int(row)
+        t1 = time.process_time()
+        return size_X, mappedX, t1 - t0
+    results = Parallel(n_jobs=n_jobs)(delayed(single_sym2int)(row) for row in symX)
+    size_X, mappedX = [], []
+    for res in results:
+        size_X.append(res[0])
+        mappedX.append(res[1])
+        total_cpu_time += res[2]
+    size_X = np.asarray(size_X)
+
+    def compute_pair(i, j):
+        t0_cpu = time.process_time()
+        if i == j:
+            t1_cpu = time.process_time()
+            return (i, j, 0.0, t1_cpu - t0_cpu)
         else:
-            job_seq = Parallel(n_jobs=n_jobs)
-        symX = np.asarray(job_seq(delayed(symbolize)(row, m=m) for row in X.T))
-        # mapping symbols to integers
-        results = job_seq(delayed(sym2int)(row) for row in symX)
-        size_X = np.asarray([item[0] for item in results])
-        mappedX = [item[1] for item in results]
+            ste_value = _symbolic_transfer_entropy(
+                size_X[i], size_X[j], mappedX[i], mappedX[j])
+            t1_cpu = time.process_time()
+            return (i, j, ste_value, t1_cpu - t0_cpu)
 
-        N = X.shape[1]
-        x_ids, y_ids = np.meshgrid(np.arange(N), np.arange(N))
-        size_X, size_Y = np.meshgrid(size_X, size_X)
-        mask = (1-np.eye(N)).astype(bool)
-        job_seq = Parallel(n_jobs=n_jobs)
-        ste_list = np.asarray(
-            job_seq(delayed(_symbolic_transfer_entropy)(
-                    x_s, y_s, mappedX[x_id], mappedX[y_id]
-                ) for x_id, y_id, x_s, y_s in zip(
-                    x_ids[mask], y_ids[mask], size_X[mask], size_Y[mask])
-            )
-        )
-        ste = np.zeros((N,N))
-        ste[mask] = ste_list
+    N = X.shape[1]
+    mask = (1-np.eye(N)).astype(bool)
+    pairs = [(i,j) for i in range(N) for j in range(N) if mask[i,j]]
+    
+    results = Parallel(n_jobs=n_jobs)(delayed(compute_pair)(i,j)
+            for i,j in pairs)
+    ste = np.zeros((N,N))
+    for i, j, ste_value, t_cpu in results:
+        ste[i, j] = ste_value
+        total_cpu_time += t_cpu
+            
+    if runtime_collect:
+        t1_wall, t1_cpu = time.time(), time.process_time()
+        wall_time = t1_wall - t0_wall
+        cpu_time = t1_cpu - t0_cpu + total_cpu_time
+        return ste, cpu_time, wall_time
     else:
-        # symbolize the data
-        symX = np.asarray([symbolize(row, m=m) for row in X.T])
-        # mapping symbols to integers
-        results = [sym2int(row) for row in symX]
-        size_X = np.asarray([item[0] for item in results])
-        mappedX = [item[1] for item in results]
-
-        N = X.shape[1]
-        x_ids, y_ids = np.meshgrid(np.arange(N), np.arange(N))
-        size_X, size_Y = np.meshgrid(size_X, size_X)
-        mask = (1-np.eye(N)).astype(bool)
-        ste_list = np.asarray(
-            [_symbolic_transfer_entropy(
-                    x_s, y_s, mappedX[x_id], mappedX[y_id]
-                ) for x_id, y_id, x_s, y_s in zip(
-                    x_ids[mask], y_ids[mask], size_X[mask], size_Y[mask])
-            ]
-        )
-        ste = np.zeros((N,N))
-        ste[mask] = ste_list
-
-    return ste
+        return ste
 
 
 def symbolic_transfer_entropy(symX:Union[List, np.ndarray], symY:Union[List, np.ndarray]):
