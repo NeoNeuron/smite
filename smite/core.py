@@ -111,13 +111,15 @@ def symbolic_transfer_entropy_matrix(X:np.ndarray, m:int=1, n_jobs:int=-1,
     
     Parameters
     ----------
-    X : time series, shape (n_time_points, n_nodes).
-    m : order of time delayed embedding.
-    n_jobs: number of parallel jobs.
+        X (np.ndarray) : time series, shape (n_time_points, n_nodes).
+        m (int) : order of time delayed embedding.
+        n_jobs (int) : number of parallel jobs.
     
     Returns
     ----------
-    matrix of symbolic transfer entropy
+        ste (np.ndarray) : matrix of symbolic transfer entropy
+        cpu_time (float, optional) : total CPU time used for the computation, return if runtime_collect is True
+        wall_time (float, optional) : total wall time used for the computation, return if runtime_collect is True
 
     """
 
